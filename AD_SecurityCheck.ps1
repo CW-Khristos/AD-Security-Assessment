@@ -511,7 +511,7 @@ $dataRow = "<div id=container><div id=portsubcontainer>"
 $dataRow += "<table border=1px>
 <caption><h2><a name='Domain Info'>Domain Info</h2></caption>"
 try {
-  $forestinfo = Get-ADForest -Server $DCtoConnect
+  $forestinfo = Get-ADForest -Server $DCtoConnect -ErrorAction Stop
 } catch {
   $forestinfo = @{
     Name = "."
