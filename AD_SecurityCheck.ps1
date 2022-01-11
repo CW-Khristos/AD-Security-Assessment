@@ -686,7 +686,7 @@ foreach ($item in $props) {
     #SINCE '$DomainPasswordPolicy.MaxPasswordAge' IS ALREADY A TIMESPAN OBJECT WE CAN USE 'TIMESPAN.COMPARETO()' METHOD
     # I honestly don't know why I had to do this! Powershell stopped comparing '$DomainPasswordPolicy.MaxPasswordAge' to '60' properly despite this seemingly still working for '$DomainPasswordPolicy.MinPasswordAge'!
     $time1 = New-TimeSpan -days 60
-    if ($DomainPasswordPolicy.MaxPasswordAge.compareto($time1) -gt 0) {
+    if ($DomainPasswordPolicy.MaxPasswordAge.compareto($time1) -lt 0) {
       $flag = "failed"
       $global:o_MaxPwdAgeFlag = $false
     }
