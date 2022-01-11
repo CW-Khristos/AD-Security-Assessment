@@ -27,6 +27,7 @@
 .TODO
     Probably best to switch all 'TimeSpan' objects to using 'TimeSpan.CompareTo()' to avoid any future issues with comparisons
     Need to add parameter inputs for '$UserLogonAge' and '$UserPasswordAge'
+    Expand AMP to include information for Kerberos Delegation, KRBTGT Account, SYSVOL Group Policy Preference Passwords, and Tombstone & Partitions Backups
 #>
 
 # First Clear any variables
