@@ -519,6 +519,7 @@ try {
     SchemaMaster = "."
     DomainNamingMaster = "."
   }
+  write-host "`r`nGet-ADForest : Could not find a forest identified by: '$DCtoConnect'." -foregroundcolor Red
   $global:o_Notes = $global:o_Notes + "`r`nGet-ADForest : Could not find a forest identified by: '$DCtoConnect'."
 }
 $domaininfo = Get-ADDomain -Server $DCtoConnect
