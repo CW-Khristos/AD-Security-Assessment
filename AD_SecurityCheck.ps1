@@ -540,7 +540,7 @@ $dataRow += "<tr>
 </tr>"
 $dataRow += "<tr>
 <td class=bold_class>RIDMaster</td>
-<td >$($domaininfo.DomainMode)</td>
+<td >$($domaininfo.RIDMaster)</td>
 </tr>"
 $dataRow += "<tr>
 <td class=bold_class>InfrastructureMaster</td>
