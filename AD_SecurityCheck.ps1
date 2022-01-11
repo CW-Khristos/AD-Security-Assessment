@@ -510,7 +510,17 @@ if ($DCList.Count -eq 0) {
 $dataRow = "<div id=container><div id=portsubcontainer>"
 $dataRow += "<table border=1px>
 <caption><h2><a name='Domain Info'>Domain Info</h2></caption>"
-$forestinfo = Get-ADForest -Server $DCtoConnect
+try {
+  $forestinfo = Get-ADForest -Server $DCtoConnect
+} catch {
+  $forestinfo = @{
+    Name = "."
+    ForestMode = "."
+    SchemaMaster = "."
+    DomainNamingMaster = "."
+  }
+  $global:o_Notes = $global:o_Notes + "`r`nGet-ADForest : Could not find a forest identified by: '$DCtoConnect'."
+}
 $domaininfo = Get-ADDomain -Server $DCtoConnect
 $dataRow += "<tr>
 <td class=bold_class>ForestName</td>
@@ -913,7 +923,6 @@ $Elapsed = "<tr>
                <td>$Seconds</td>
                <td>$Milliseconds</td>
                <td>$myhost</td>
-               
             </tr>"
 $ScriptExecutionRow += $Elapsed
 Add-Content $HealthReport $ScriptExecutionRow
