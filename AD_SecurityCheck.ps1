@@ -1,14 +1,16 @@
 <# 
 .SYNOPSIS 
     AD_SecurityCheck
-    This was based on "AD-Security-Assessment" by Krishnamoorthi Gopal - https://4sysops.com/members/krishna1990/
-    https://github.com/gkm-automation/AD-Security-Assessment
+    This was based on "AD-Security-Assessment" by Krishnamoorthi Gopal - https://4sysops.com/members/krishna1990/ - https://github.com/gkm-automation/AD-Security-Assessment
+    Also adapted from https://www.cyberdrain.com/monitoring-with-powershell-chapter-3-monitoring-user-creation/ - Provided by DarrenC
+      Created 31/12/2019 - DC
+      Updated 12/01/2022 - DC fixed array output of user list for NC Service Output and some code formatting
 
 .DESCRIPTION 
     Pulls important security facts from Active Directory and generates nicely viewable reports in HTML format by highlighting the spots that require attention
  
 .NOTES
-    Version        : 0.1.1 (11 January 2022)
+    Version        : 0.1.2 (24 January 2022)
     Creation Date  : 10 January 2022
     Purpose/Change : Pulls important security facts from Active Directory and generates nicely viewable reports in HTML format
     File Name      : AD_SecurityCheck.ps1 
@@ -23,17 +25,19 @@
           Disabled use of SMTP method for delivering reports; instead these will be saved locally under 'C:\IT\Reports'
     0.1.1 Switched to using 'TimeSpan.CompareTo()' for evaluating '$DomainPasswordPolicy.MinPasswordAge' and '$DomainPasswordPolicy.MaxPasswordAge'
             This was due to what I can only call a 'bug' in the behaviour of the comparisons when PS suddenly stopped comparing '$DomainPasswordPolicy.MaxPasswordAge' to '60' properly
+    0.1.2 Added 'Misc. User Checks' from DarrenC to Health Report and Output
 
 .TODO
-    Probably best to switch all 'TimeSpan' objects to using 'TimeSpan.CompareTo()' to avoid any future issues with comparisons
-    Need to add parameter inputs for '$UserLogonAge' and '$UserPasswordAge'
-    Expand AMP to include information for Kerberos Delegation, KRBTGT Account, SYSVOL Group Policy Preference Passwords, and Tombstone & Partitions Backups
+    Need to add parameter inputs to AMP for '$UserLogonAge' and '$UserPasswordAge'
+    Expand AMP to include information for Kerberos Delegation, KRBTGT Account, Misc. User Checks, SYSVOL Group Policy Preference Passwords, and Tombstone & Partitions Backups
 #>
 
-# First Clear any variables
+#First Clear any variables
 Remove-Variable * -ErrorAction SilentlyContinue
 
 #REGION ----- DECLARATIONS ----
+#NOTES
+$global:o_Notes = " "
 $global:o_Domain = ""
 $global:o_PDC = ""
 #PASSWORDS
@@ -62,8 +66,7 @@ $global:o_RevEncryptUser = ""
 $global:o_PwdNoRequire = ""
 $global:o_KerbUser = ""
 $global:o_KerbPreAuthUser = ""
-#NOTES
-$global:o_Notes = " "
+$global:ArrayOfNames = @("test", "tmp","skykick","mig", "migwiz","temp","-admin","supervisor")
 #ENDREGION ----- DECLARATIONS ----
 
 #---------------------------------------------------------------------------------------------------------------------------------------------
@@ -84,29 +87,24 @@ function Write-Log {
     $LogContent = (Get-Date -f g)+" " + $Severity +"  "+$Message
     Add-Content -Path $logFile -Value $LogContent -PassThru | Write-Host
 
-}
+} ## Write-Log
 
-function Get-IniContent ($filePath) {
-  $ini = @{}
-  switch -regex -file $FilePath {
-    “^\[(.+)\]” { # Section
-      $section = $matches[1]
-      $ini[$section] = @{}
-      $CommentCount = 0
-    }
-    “^(;.*)$” { # Comment
-      $value = $matches[1]
-      $CommentCount = $CommentCount + 1
-      $name = “Comment” + $CommentCount
-      $ini[$section][$name] = $value
-    }
-    “(.+?)\s*=(.*)” { # Key
-      $name,$value = $matches[1..2]
-      $ini[$section][$name] = $value
-    }
+#User priviledge changes
+Function Get-PrivilegedGroupChanges {
+  Param(
+    $Server = "localhost",
+    $Hour = 24
+  )
+
+  $ProtectedGroups = Get-ADGroup -Filter 'AdminCount -eq 1' -Server $Server
+  $Members = @()
+  ForEach ($Group in $ProtectedGroups) {
+    $Members += Get-ADReplicationAttributeMetadata -Server $Server -Object $Group.DistinguishedName -ShowAllLinkedValues | 
+      Where-Object {$_.IsLinkValue} | 
+        Select-Object @{name='GroupDN';expression={$Group.DistinguishedName}}, @{name='GroupName';expression={$Group.Name}}, *
   }
-  return $ini
-}
+  $Members | Where-Object {$_.LastOriginatingChangeTime -gt (Get-Date).AddHours(-1 * $Hour)}
+} ## Get-PrivilegedGroupChanges
 #ENDREGION ----- FUNCTIONS ----
 
 #------------
@@ -128,22 +126,22 @@ if (-not (test-path -path "C:\IT\Log")) {
   new-item -path "C:\IT\Log" -itemtype directory
 }
 
-# Start script execution time calculation
+#Start script execution time calculation
 $ScrptStartTime = (Get-Date).ToString('dd-MM-yyyy hh:mm:ss')
 $sw = [Diagnostics.Stopwatch]::StartNew()
 
-# Get Script Directory
+#Get Script Directory
 $Scriptpath = $($MyInvocation.MyCommand.Path)
 $Dir = "C:\IT";
 
-# Report
+#Report
 $runntime= (get-date -format dd_MM_yyyy-HH_mm_ss)-as [string]
 $HealthReport = $Dir + "\Reports\ADsecurity" + "$runntime" + ".htm"
 
-# Logfile 
+#Logfile 
 $Logfile = $Dir + "\Log\ADsecurity" + "$runntime" + ".log"
 
-#import AD Module
+#Import AD Module
 try {
  Import-Module ActiveDirectory   
 } catch [System.Management.Automation.ParameterBindingException] {
@@ -151,22 +149,11 @@ try {
   Break;
 }
 
-#Import Configuration Params
-#$params = Get-IniContent -filePath "$dir\Config.ini"
-
-# E-mail report details
-#$SendEmail     = $params.SMTPSettings.SendEmail.Trim()
-#$emailFrom     = $params.SMTPSettings.EmailFrom.Trim()
-#$emailTo       = $params.SMTPSettings.EmailTo.Trim()
-#$smtpServer    = $params.SMTPSettings.SmtpServer.Trim()
-#$emailSubject  = $params.SMTPSettings.EmailSubject.Trim()
-
 $UserLogonAge=180
 $UserPasswordAge=180
 $strComputer = $env:computername
 $strWMI = Get-WmiObject -Namespace root\cimv2 -Class Win32_ComputerSystem | Select Domain
 $DCtoConnect = $strComputer + "." + $strWMI.domain
-#$DCtoConnect = $params.Config.ConnectorDC.Trim()
 [string]$date = Get-Date
 $DCList = @()
 
@@ -482,7 +469,7 @@ $header = "
 Add-Content $HealthReport $header
 
 #---------------------------------------------------------------------------------------------------------------------------
-# Domain INfo
+# Domain Info
 #---------------------------------------------------------------------------------------------------------------------------
 try { 
   $Domain = [System.DirectoryServices.ActiveDirectory.Domain]::GetCurrentDomain()  
@@ -497,16 +484,16 @@ if (!$DCList) {
   Break;
 }
 Write-Log "List of Domain Controllers Discovered"
-# List out all machines discovered in Log File and Console
+#List out all machines discovered in Log File and Console
 foreach ($D in $DCList) {Write-Log "$D"}
 Add-Content $HealthReport $dataRow
 
-# Check if any domain controllers left
+#Check if any domain controllers left
 if ($DCList.Count -eq 0) {
   Write-Log -Message "As no machines left script won't continue further" -Severity Error
   Break
 }
-# Start Container Div and Sub container div
+#Start Container Div and Sub container div
 $dataRow = "<div id=container><div id=portsubcontainer>"
 $dataRow += "<table border=1px>
 <caption><h2><a name='Domain Info'>Domain Info</h2></caption>"
@@ -560,19 +547,17 @@ $dataRow += "<tr>
 <td >$($domaininfo.InfrastructureMaster)</td>
 </tr>"
 Add-Content $HealthReport $dataRow
-Add-Content $HealthReport "</table></div>" # End Sub Container Div
+Add-Content $HealthReport "</table></div>" #End Sub Container Div
 
 #---------------------------------------------------------------------------
 # Domain Users Validation
 #---------------------------------------------------------------------------
 Write-Log -Message "Performing Domain Users Validation..............."
-# Start Sub Container
+#Start Sub Container
 $DomainUsers= "<Div id=DomainUserssubcontainer><table border=1px>
    <caption><h2><a name='DomainUsers'>Domain Users</h2></caption>"
 Add-Content $HealthReport $DomainUsers
-## Get Domain User Information
-#$LastLoggedOnDate = $(Get-Date) - $(New-TimeSpan -days $params.Config.UserLogonAge)
-#$PasswordStaleDate = $(Get-Date) - $(New-TimeSpan -days $params.Config.UserPasswordAge)
+#Get Domain User Information
 $LastLoggedOnDate = $(Get-Date) - $(New-TimeSpan -days $UserLogonAge)  
 $PasswordStaleDate = $(Get-Date) - $(New-TimeSpan -days $UserPasswordAge)
 $ADLimitedProperties = @("Name","Enabled","SAMAccountname","DisplayName","Enabled","LastLogonDate","PasswordLastSet","PasswordNeverExpires","PasswordNotRequired","PasswordExpired","SmartcardLogonRequired","AccountExpirationDate","AdminCount","Created","Modified","LastBadPasswordAttempt","badpwdcount","mail","CanonicalName","DistinguishedName","ServicePrincipalName","SIDHistory","PrimaryGroupID","UserAccountControl")
@@ -669,7 +654,7 @@ If ($($DomainUserDoesNotRequirePreAuthArray.Count) -gt 0) {
   </tr>" 
 }
 Add-Content $HealthReport $domainusersrow
-Add-Content $HealthReport "</tbody></table></div></div>" # End Sub Container Div and Container Div
+Add-Content $HealthReport "</tbody></table></div></div>" #End Sub Container Div and Container Div
 
 #-----------------------
 # Domain Password Policy 
@@ -698,7 +683,7 @@ foreach ($item in $props) {
     #SINCE '$DomainPasswordPolicy.MaxPasswordAge' IS ALREADY A TIMESPAN OBJECT WE CAN USE 'TIMESPAN.COMPARETO()' METHOD
     # I honestly don't know why I had to do this! Powershell stopped comparing '$DomainPasswordPolicy.MaxPasswordAge' to '60' properly despite this seemingly still working for '$DomainPasswordPolicy.MinPasswordAge'!
     $time1 = New-TimeSpan -days 60
-    if ($DomainPasswordPolicy.MaxPasswordAge.compareto($time1) -lt 0) {
+    if ($DomainPasswordPolicy.MaxPasswordAge.compareto($time1) -gt 0) {
       $flag = "failed"
       $global:o_MaxPwdAgeFlag = $false
     }
@@ -706,8 +691,22 @@ foreach ($item in $props) {
   If (($item -eq 'PasswordHistoryCount') -and $DomainPasswordPolicy.PasswordHistoryCount -le '24') { $flag = "failed" }
   If (($item -eq 'ReversibleEncryptionEnabled') -and $DomainPasswordPolicy.ReversibleEncryptionEnabled -eq 'True') { $flag = "failed" }
   If (($item -eq 'LockoutThreshold') -and ($DomainPasswordPolicy.LockoutThreshold -gt 10 -or $DomainPasswordPolicy.LockoutThreshold -eq 0)) { $flag = "failed" }
-  If (($item -eq 'LockoutDuration') -and $DomainPasswordPolicy.LockoutDuration -lt 15) { $flag = "failed"; $global:o_LockDurationFlag = $false }
-  If (($item -eq 'LockoutObservationWindow') -and $DomainPasswordPolicy.LockoutObservationWindow -le 15) { $flag = "failed"; $global:o_LockObserveFlag = $false }
+  If ($item -eq 'LockoutDuration') { #-and $DomainPasswordPolicy.LockoutDuration -lt 15) { $flag = "failed"; $global:o_LockDurationFlag = $false }
+    #CREATE A NEW-TIMESPAN '$time1' SET TO '15' MINUTES
+    $time1 = New-TimeSpan -minutes 15
+    if ($DomainPasswordPolicy.LockoutDuration.compareto($time1) -lt 0) {
+      $flag = "failed"
+      $global:o_LockDurationFlag = $false
+    }
+  }
+  If ($item -eq 'LockoutObservationWindow') { #-and $DomainPasswordPolicy.LockoutObservationWindow -le 15) { $flag = "failed"; $global:o_LockObserveFlag = $false }
+    #CREATE A NEW-TIMESPAN '$time1' SET TO '15' MINUTES
+    $time1 = New-TimeSpan -minutes 15
+    if ($DomainPasswordPolicy.LockoutObservationWindow.compareto($time1) -lt 0) {
+      $flag = "failed"
+      $global:o_LockObserveFlag = $false
+    }
+  }
 
   $Pwdpolyrow += "<tr>
   <td class=bold_class>$item</td>
@@ -721,7 +720,7 @@ Add-Content $HealthReport "</table></Div>" #End Sub Container
 # Tombstone and Backup Information
 #---------------------------------------------------------------------------------------------------------------------------------------------
 Write-Log -Message "Checking Tombstone and Backup Information........"
-# Start Sub Container
+#Start Sub Container
 $tsbkp = "<Div id=TLBkbsubcontainer><table border=1px>
    <caption><h2><a name='tsbkp'>Tombstone & Partitions Backup</h2></caption>"
 Add-Content $HealthReport $tsbkp
@@ -749,13 +748,13 @@ ForEach ($partition in $partitions) {
     </tr>"
 }
 Add-Content $HealthReport $tsbkprow
-Add-Content $HealthReport "</table></Div></Div>" # End Sub Container and Container Div
+Add-Content $HealthReport "</table></Div></Div>" #End Sub Container and Container Div
 
 #---------------------------------------------------------------------------------------------------------------------------------------------
-# Kerberos delegation Info
+# Kerberos Delegation Info
 #---------------------------------------------------------------------------------------------------------------------------------------------
 Write-Log -Message "Checking Kerberos delegation Info........"
-# Start Sub Container
+#Start Container and Sub Container Div
 $krbtgtdel = "<div id=container><Div id=delegationsubcontainer><table border=1px>
    <caption><h2><a name='krbtgtdel'>Kerberos Delegation (Unconstrained)</h2></caption>
          <thead>
@@ -763,7 +762,7 @@ $krbtgtdel = "<div id=container><Div id=delegationsubcontainer><table border=1px
 		<th>Count</th>
         </thead>"
 Add-Content $HealthReport $krbtgtdel
-## Identify Accounts with Kerberos Delegation
+#Identify Accounts with Kerberos Delegation
 $KerberosDelegationArray = @()
 [array]$KerberosDelegationObjects =  Get-ADObject -filter { (UserAccountControl -BAND 0x0080000) -AND (PrimaryGroupID -ne '516') -AND (PrimaryGroupID -ne '521') } -Server $DCtoConnect -prop Name,ObjectClass,PrimaryGroupID,UserAccountControl,ServicePrincipalName
 
@@ -788,13 +787,13 @@ $Groupedresult.Keys | ForEach-Object {
     </tr>"
 }
 Add-Content $HealthReport $krbtgtdelrow
-Add-Content $HealthReport "</table></Div>" # End Sub Container 
+Add-Content $HealthReport "</table></Div>" #End Sub Container 
 
 #---------------------------------------------------------------------------------------------------------------------------------------------
 # Scan SYSVOL for Group Policy Preference Passwords
 #---------------------------------------------------------------------------------------------------------------------------------------------
 Write-Log -Message "Scan SYSVOL for Group Policy Preference Passwords......."
-# Start Sub Container
+#Start Sub Container
 $gpppwd = "<Div id=gpppwdsubcontainer><table border=1px>
           <caption><h2><a name='krbtgtdel'>Scan SYSVOL for Group Policy Preference Passwords</h2></caption>"
 Add-Content $HealthReport $gpppwd
@@ -813,12 +812,13 @@ $gpppwdrow += "<tr>
 <td class=$flag style= 'text-align: center'><a href='javascript:void(0)' onclick=""Powershellparamater('"+ $Passfoundfiles +"')"">$Count</a></td>
 </tr>"
 Add-Content $HealthReport $gpppwdrow
-Add-Content $HealthReport "</table></Div></Div>" # End Sub Container and Container Div
+Add-Content $HealthReport "</table></Div></Div>" #End Sub Container and Container Div
 
 #-------------------------------------
-# KRBTGT account info
+# KRBTGT Account Info
 #-------------------------------------
 Write-Log -Message "Checking KRBTGT account info........"
+#Start Container and Sub Container Div
 $krbtgt = "<div id=container><div id=krbtgtcontainer><table border=1px>
    <caption><h2><a name='krbtgt'>KRBTGT Account Info</h2></caption>
          <thead>
@@ -830,18 +830,23 @@ $krbtgt = "<div id=container><div id=krbtgtcontainer><table border=1px>
         </thead>
 	        <tr>"
 Add-Content $HealthReport $krbtgt
-$DomainKRBTGTAccount = Get-ADUser 'krbtgt' -Server $DCtoConnect -Properties 'msds-keyversionnumber',Created,PasswordLastSet
+$DomainKRBTGTAccount = Get-ADUser 'krbtgt' -Server $DCtoConnect -Properties 'msds-keyversionnumber', Created, PasswordLastSet
 If ($(New-TimeSpan -Start ($DomainKRBTGTAccount.PasswordLastSet) -End $(Get-Date)).Days -gt 180) {
   $flag = "failed"
 } else {
   $flag = "passed"
 }
-$SelectedPros = @("DistinguishedName","Enabled","msds-keyversionnumber","PasswordLastSet","Created")
+#KRBTGT Password Age
+$Age = (Get-Date) - [datetime]$DomainKRBTGTAccount.PasswordLastSet
+$Age.Days
+$AgeInDays = $Age.Days
+$DomainKRBTGTAccount | Add-Member -MemberType NoteProperty -Name PasswordAge -Value $AgeInDays -Force
+$SelectedPros = @("DistinguishedName", "Enabled", "msds-keyversionnumber", "PasswordLastSet", "PasswordAge", "Created")
 $SelectedPros | % {
   $krbtgtrow += "<td class=$flag style= 'text-align: center'>$($DomainKRBTGTAccount.$PSItem)</td>"
 }
 Add-Content $HealthReport $krbtgtrow
-Add-Content $HealthReport "</tr></table></div></div>"
+Add-Content $HealthReport "</tr></table></div></div>" #End Sub Container and Container Div
 
 #-----------------------
 # Privileged AD Group Report
@@ -890,7 +895,92 @@ foreach ($group in $ADPrivGroupArray) {
   }
 }
 Add-Content $HealthReport $grouprow
-Add-Content $HealthReport "</table></Div></div>" #End Container
+Add-Content $HealthReport "</table></div>" #End Sub Container
+
+#-----------------------
+# Misc. User Checks Report
+#-----------------------
+Write-Log -Message "Performing Misc. User Checks Report......."
+#Start Sub Container Div
+$userpriv = "<div id=DomainUserssubcontainer><table border=1px>
+            <caption><h2>Misc. User Checks Info</h2></caption>
+            <thead>
+		<th>Check</th>
+		<th>Notes</th>
+        </thead>"
+Add-Content $HealthReport $userpriv
+#User priviledge changes
+$GroupChanges = ""
+$privrow += "<tr>
+  <td class=bold_class>Privileged Groups Changes</td>
+  <td style= 'text-align: center'>"
+$ListOfGroupChanges = Get-PrivilegedGroupChanges
+if ($ListOfGroupChanges -eq $Null) {
+  $GroupChanges = "No Privileged Group Changes Detected"
+  $GroupChanges = $GroupChanges -join '<br>'
+} else {
+  foreach ($Item in $ListOfGroupChanges) {
+    $GroupChanges += "Group $($Item.GroupName) has been changed - $($Item.AttributeValue) has been added or removed"
+    $GroupChanges = $GroupChanges -join '<br>'
+  }
+}
+if (!$GroupChanges) {
+  $GroupChanges = "No Privileged Group Changes Detected"
+} else {
+  $GroupChanges = $GroupChanges -join '<br>'
+}
+$privrow += $GroupChanges
+$privrow += "</td></tr>"
+Add-Content $HealthReport $privrow
+
+#Temporary users by name
+$TemporaryUsersList = @()
+$temprow += "<tr>
+  <td class=bold_class>Temporary Users</td>
+  <td style= 'text-align: center'>"
+foreach ($Name in $global:ArrayOfNames) {
+  $filter =  'Name -like "*'+ $($Name) + '*"'
+  $TempUsers = Get-ADUser -Filter $filter -Properties whenCreated
+  if ($TempUsers -ne $null) {
+    foreach ($TUser in $TempUsers) {
+      $TemporaryUsersList += "$($TUser.name) temporary user found created at $($TUser.whenCreated)"
+      $TemporaryUsersList = $TemporaryUsersList -join '<br>'
+    }
+  }
+}
+if (!$TemporaryUsersList) {
+  $TempUserCheck = "No Temporary User Accounts Found"
+  $TemporaryUsersList = ""
+} else {
+  $TempUserCheck = "$($TemporaryUsersList.count) Temporary User Accounts Found"
+  $TemporaryUsersList = $TemporaryUsersList -join '<br>'
+}
+$TempUserCheck = $TempUserCheck -join '<br>'
+$temprow += $TempUserCheck
+$temprow += $TemporaryUsersList
+$temprow += "</td></tr>"
+Add-Content $HealthReport $temprow
+
+#New domain users check
+$UserChanges = @()
+$newrow += "<tr>
+  <td class=bold_class>New Users</td>
+  <td style= 'text-align: center'>"
+$When = ((Get-Date).AddDays(-1)).Date
+$GetUsers = Get-ADUser -Filter {whenCreated -ge $When} -Properties whenCreated
+foreach ($User in $GetUsers) {
+  $UserChanges += "$($User.name) has been created at $($User.whenCreated) `n"
+  $UserChanges = $UserChanges -join '<br>'
+}
+if (!$UserChanges) {
+  $UserChanges = "No User Additions Detected Since $When"
+} else {
+  $UserChanges = $UserChanges -join '<br>'
+}
+$newrow += $UserChanges
+$newrow += "</td></tr>"
+Add-Content $HealthReport $newrow
+Add-Content $HealthReport "</table></div></div>" #End Container and Sub Container Div
 
 #---------------------------------------------------------------------------------------------------------------------------------------------
 # Script Execution Time
@@ -907,7 +997,7 @@ $ScriptExecutionRow = "<div id=scriptexecutioncontainer><table>
       <th>Milliseconds</th>
       <th>Script Executed on</th>
 	</th>"
-# Stop script execution time calculation
+#Stop script execution time calculation
 $sw.Stop()
 $Days = $sw.Elapsed.Days
 $Hours = $sw.Elapsed.Hours
@@ -975,6 +1065,10 @@ $global:o_KerbUser = $DomainKerberosDESUsersArray.Count
 $global:o_Notes = $global:o_Notes + "`r`nUSERS W/ KERBEROS DES : " + $global:o_KerbUser
 $global:o_KerbPreAuthUser = $DomainUserDoesNotRequirePreAuthArray.Count
 $global:o_Notes = $global:o_Notes + "`r`nUSERS W/ KERBEROS PRE-AUTH NOT REQUIRED : " + $global:o_KerbPreAuthUser
+#MISC
+$global:o_Notes = $global:o_Notes + "`r`nPRIVILEDGED GROUP CHANGES : " + $GroupChanges
+$global:o_Notes = $global:o_Notes + "`r`nTEMPORARY USER LIST : " + $TempUserCheck + $TemporaryUsersList
+$global:o_Notes = $global:o_Notes + "`r`nNEW DOMAIN USERS : " + $UserChanges
 #NOTES
 write-host $global:o_Notes -ForegroundColor Green
 $global:o_Notes = $global:o_Notes.replace("`r`n", "<br>")
@@ -983,7 +1077,7 @@ $global:o_Notes = $global:o_Notes.replace("`r`n", "<br>")
 # Sending Mail
 #---------------------------------------------------------------------------------------------------------------------------------------------
 if ($SendEmail -eq 'Yes') {
-  # Send ADHealthCheck Report
+  #Send ADHealthCheck Report
   if (Test-Path $HealthReport) {
     try {
       $body = "Please find AD Health Check report attached."
