@@ -836,6 +836,7 @@ $krbtgt = "<div id=container><div id=krbtgtcontainer><table border=1px>
 		<th>Enabled</th>
         <th>msds-keyversionnumber</th>
         <th>PasswordLastSet</th>
+        <th>PasswordAge</th>
         <th>Created</th>
         </thead>
 	        <tr>"
