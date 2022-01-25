@@ -10,7 +10,7 @@
     Pulls important security facts from Active Directory and generates nicely viewable reports in HTML format by highlighting the spots that require attention
  
 .NOTES
-    Version        : 0.1.2 (24 January 2022)
+    Version        : 0.1.2 (25 January 2022)
     Creation Date  : 10 January 2022
     Purpose/Change : Pulls important security facts from Active Directory and generates nicely viewable reports in HTML format
     File Name      : AD_SecurityCheck.ps1 
@@ -26,6 +26,7 @@
     0.1.1 Switched to using 'TimeSpan.CompareTo()' for evaluating '$DomainPasswordPolicy.MinPasswordAge' and '$DomainPasswordPolicy.MaxPasswordAge'
             This was due to what I can only call a 'bug' in the behaviour of the comparisons when PS suddenly stopped comparing '$DomainPasswordPolicy.MaxPasswordAge' to '60' properly
     0.1.2 Added 'Misc. User Checks' from DarrenC to Health Report and Output
+          Output Formatting, Improved Error Handling, cleaned up old code / comments
 
 .TODO
     Need to add parameter inputs to AMP for '$UserLogonAge' and '$UserPasswordAge'
@@ -99,11 +100,20 @@ Function Get-PrivilegedGroupChanges {
   $ProtectedGroups = Get-ADGroup -Filter 'AdminCount -eq 1' -Server $Server
   $Members = @()
   ForEach ($Group in $ProtectedGroups) {
-    $Members += Get-ADReplicationAttributeMetadata -Server $Server -Object $Group.DistinguishedName -ShowAllLinkedValues | 
-      Where-Object {$_.IsLinkValue} | 
-        Select-Object @{name='GroupDN';expression={$Group.DistinguishedName}}, @{name='GroupName';expression={$Group.Name}}, *
+    try {
+      $Members += Get-ADReplicationAttributeMetadata -Server $Server -Object $Group.DistinguishedName -ShowAllLinkedValues | 
+        Where-Object {$_.IsLinkValue} | 
+          Select-Object @{name='GroupDN';expression={$Group.DistinguishedName}}, @{name='GroupName';expression={$Group.Name}}, *
+    } catch {
+      $Members = $Null
+    }
   }
-  $Members | Where-Object {$_.LastOriginatingChangeTime -gt (Get-Date).AddHours(-1 * $Hour)}
+  if ($Members -ne $Null) {
+    $Members | Where-Object {$_.LastOriginatingChangeTime -gt (Get-Date).AddHours(-1 * $Hour)}
+  } else {
+    write-host "`r`nGet-PrivilegedGroupChanges : Could not obtain AD Replication data: 'Get-ADReplicationAttributeMetadata'." -foregroundcolor Red
+    $global:o_Notes = $global:o_Notes + "`r`nGet-PrivilegedGroupChanges : Could not obtain AD Replication data: 'Get-ADReplicationAttributeMetadata'."
+  }
 } ## Get-PrivilegedGroupChanges
 #ENDREGION ----- FUNCTIONS ----
 
@@ -910,25 +920,22 @@ $userpriv = "<div id=DomainUserssubcontainer><table border=1px>
         </thead>"
 Add-Content $HealthReport $userpriv
 #User priviledge changes
-$GroupChanges = ""
+$GroupChanges = @()
 $privrow += "<tr>
   <td class=bold_class>Privileged Groups Changes</td>
   <td style= 'text-align: center'>"
 $ListOfGroupChanges = Get-PrivilegedGroupChanges
-if ($ListOfGroupChanges -eq $Null) {
-  $GroupChanges = "No Privileged Group Changes Detected"
-  $GroupChanges = $GroupChanges -join '<br>'
-} else {
+if ($ListOfGroupChanges) {
   foreach ($Item in $ListOfGroupChanges) {
-    $GroupChanges += "Group $($Item.GroupName) has been changed - $($Item.AttributeValue) has been added or removed"
-    $GroupChanges = $GroupChanges -join '<br>'
+    $GroupChanges += "Group $($Item.GroupName) has been changed - $($Item.AttributeValue) has been added or removed" + '<br>'
   }
 }
 if (!$GroupChanges) {
-  $GroupChanges = "No Privileged Group Changes Detected"
+  $GroupCheck = "No Privileged Group Changes Detected"
 } else {
-  $GroupChanges = $GroupChanges -join '<br>'
+  $GroupCheck = "$($GroupChanges.count) Group Changes Found"
 }
+$privrow += $GroupCheck
 $privrow += $GroupChanges
 $privrow += "</td></tr>"
 Add-Content $HealthReport $privrow
@@ -943,19 +950,15 @@ foreach ($Name in $global:ArrayOfNames) {
   $TempUsers = Get-ADUser -Filter $filter -Properties whenCreated
   if ($TempUsers -ne $null) {
     foreach ($TUser in $TempUsers) {
-      $TemporaryUsersList += "$($TUser.name) temporary user found created at $($TUser.whenCreated)"
-      $TemporaryUsersList = $TemporaryUsersList -join '<br>'
+      $TemporaryUsersList += "$($TUser.name) temporary user found created at $($TUser.whenCreated)" + '<br>'
     }
   }
 }
 if (!$TemporaryUsersList) {
   $TempUserCheck = "No Temporary User Accounts Found"
-  $TemporaryUsersList = ""
 } else {
   $TempUserCheck = "$($TemporaryUsersList.count) Temporary User Accounts Found"
-  $TemporaryUsersList = $TemporaryUsersList -join '<br>'
 }
-$TempUserCheck = $TempUserCheck -join '<br>'
 $temprow += $TempUserCheck
 $temprow += $TemporaryUsersList
 $temprow += "</td></tr>"
@@ -968,15 +971,17 @@ $newrow += "<tr>
   <td style= 'text-align: center'>"
 $When = ((Get-Date).AddDays(-1)).Date
 $GetUsers = Get-ADUser -Filter {whenCreated -ge $When} -Properties whenCreated
-foreach ($User in $GetUsers) {
-  $UserChanges += "$($User.name) has been created at $($User.whenCreated) `n"
-  $UserChanges = $UserChanges -join '<br>'
+if ($GetUsers) {
+  foreach ($User in $GetUsers) {
+    $UserChanges += "$($User.name) has been created at $($User.whenCreated)" + '<br>'
+  }
 }
 if (!$UserChanges) {
-  $UserChanges = "No User Additions Detected Since $When"
+  $UserCheck = "No User Additions Detected Since $When"
 } else {
-  $UserChanges = $UserChanges -join '<br>'
+  $UserCheck = "$($UserChanges.count) New Users Found"
 }
+$newrow += $UserCheck
 $newrow += $UserChanges
 $newrow += "</td></tr>"
 Add-Content $HealthReport $newrow
@@ -1019,7 +1024,9 @@ $ScriptExecutionRow += $Elapsed
 Add-Content $HealthReport $ScriptExecutionRow
 Add-Content $HealthReport "</table></div>"
 
+#---------------------------------------------------------------------------------------------------------------------------------------------
 #OUTPUT
+#---------------------------------------------------------------------------------------------------------------------------------------------
 $global:o_Domain = $forestinfo.Name.ToUpper()
 $global:o_Notes = $global:o_Notes + "`r`nDOMAIN : " + $global:o_Domain
 $global:o_PDC = $domaininfo.PDCEmulator.ToUpper()
@@ -1066,37 +1073,13 @@ $global:o_Notes = $global:o_Notes + "`r`nUSERS W/ KERBEROS DES : " + $global:o_K
 $global:o_KerbPreAuthUser = $DomainUserDoesNotRequirePreAuthArray.Count
 $global:o_Notes = $global:o_Notes + "`r`nUSERS W/ KERBEROS PRE-AUTH NOT REQUIRED : " + $global:o_KerbPreAuthUser
 #MISC
-$global:o_Notes = $global:o_Notes + "`r`nPRIVILEDGED GROUP CHANGES : " + $GroupChanges
-$global:o_Notes = $global:o_Notes + "`r`nTEMPORARY USER LIST : " + $TempUserCheck + $TemporaryUsersList
-$global:o_Notes = $global:o_Notes + "`r`nNEW DOMAIN USERS : " + $UserChanges
+$global:o_Notes = $global:o_Notes + "`r`nPRIVILEDGED GROUP CHANGES : " + $GroupCheck + "<br>" + $GroupChanges
+$global:o_Notes = $global:o_Notes + "`r`nTEMPORARY USER LIST : " + $TempUserCheck + "<br>" + $TemporaryUsersList
+$global:o_Notes = $global:o_Notes + "`r`nNEW DOMAIN USERS : " + $UserCheck + "<br>" + $UserChanges
 #NOTES
 write-host $global:o_Notes -ForegroundColor Green
 $global:o_Notes = $global:o_Notes.replace("`r`n", "<br>")
 
-#---------------------------------------------------------------------------------------------------------------------------------------------
-# Sending Mail
-#---------------------------------------------------------------------------------------------------------------------------------------------
-if ($SendEmail -eq 'Yes') {
-  #Send ADHealthCheck Report
-  if (Test-Path $HealthReport) {
-    try {
-      $body = "Please find AD Health Check report attached."
-      #$port = "25"
-      Send-MailMessage -Priority High -Attachments $HealthReport -To $emailTo -From $emailFrom -SmtpServer $smtpServer -Body $Body -Subject $emailSubject -Credential $Credentials -UseSsl -Port 587 -ErrorAction Stop
-    } catch {       
-      Write-Log 'Error in sending AD Health Check Report'
-    }
-  }
-  #Send an ERROR mail if Report is not found 
-  if (!(Test-Path $HealthReport)) {
-    try {
-      $body = "ERROR: NO AD Health Check report"
-      $port = "25"
-      Send-MailMessage -Priority High -To $emailTo -From $emailFrom -SmtpServer $smtpServer -Body $Body -Subject $emailSubject -Port $port -ErrorAction Stop
-    } catch {
-      Write-Log 'Unable to send Error mail.'
-    }
-  }
-} else {
-  Write-Log "As Send Email is NO so report through mail is not being sent. Please find the report in Script directory."
-}
+Write-Log "Please find the report in C:\IT\Reports directory."
+#END SCRIPT
+#------------
