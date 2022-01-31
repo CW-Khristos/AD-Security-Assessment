@@ -698,7 +698,7 @@ foreach ($item in $props) {
       $global:o_MaxPwdAgeFlag = $false
     }
   }
-  If (($item -eq 'PasswordHistoryCount') -and $DomainPasswordPolicy.PasswordHistoryCount -le '24') { $flag = "failed" }
+  If (($item -eq 'PasswordHistoryCount') -and $DomainPasswordPolicy.PasswordHistoryCount -lt '10') { $flag = "failed" }
   If (($item -eq 'ReversibleEncryptionEnabled') -and $DomainPasswordPolicy.ReversibleEncryptionEnabled -eq 'True') { $flag = "failed" }
   If (($item -eq 'LockoutThreshold') -and ($DomainPasswordPolicy.LockoutThreshold -gt 10 -or $DomainPasswordPolicy.LockoutThreshold -eq 0)) { $flag = "failed" }
   If ($item -eq 'LockoutDuration') { #-and $DomainPasswordPolicy.LockoutDuration -lt 15) { $flag = "failed"; $global:o_LockDurationFlag = $false }
